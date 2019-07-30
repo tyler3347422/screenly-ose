@@ -22,7 +22,7 @@ def parse_cpu_info():
             try:
                 key = line.split(':')[0].strip()
                 value = line.split(':')[1].strip()
-            except Exception:
+            except:
                 pass
 
             if key == 'processor':
@@ -40,7 +40,7 @@ def get_kernel_modules():
             if 'Module' not in line:
                 modules.append(line.split()[0])
         return modules
-    except Exception:
+    except:
         return 'Unable to run lsmod.'
 
 
@@ -50,14 +50,14 @@ def get_gpu_version():
         for line in version:
             if 'version' in line:
                 return line.strip().replace('version ', '')
-    except Exception:
+    except:
         return 'Unable to run vcgencmd.'
 
 
 def get_monitor_status():
     try:
         return sh.tvservice('-s').stdout.strip()
-    except Exception:
+    except:
         return 'Unable to run tvservice.'
 
 
@@ -70,7 +70,7 @@ def get_display_power():
             return 'Off'
         else:
             return 'Unknown'
-    except Exception:
+    except:
         return 'Unable to determine display power.'
 
 
@@ -122,7 +122,7 @@ def get_git_branch():
             'HEAD'
         )
         return get_hash.stdout.strip()
-    except Exception:
+    except:
         return 'Unable to get git branch.'
 
 
@@ -136,7 +136,7 @@ def get_git_short_hash():
             'HEAD'
         )
         return get_hash.stdout.strip()
-    except Exception:
+    except:
         return 'Unable to get git hash.'
 
 
@@ -149,7 +149,7 @@ def get_git_hash():
             'HEAD'
         )
         return get_hash.stdout.strip()
-    except Exception:
+    except:
         return 'Unable to get git hash.'
 
 
@@ -219,10 +219,7 @@ def get_raspberry_model():
         'a020d3': 'Model 3B+',
         '9020e0': 'Model 3A+'
     }
-    try:
-        return models.get(get_raspberry_code())
-    except Exception:
-        return 'Unable to determine Raspberry model.'
+    return models.get(get_raspberry_code())
 
 
 def get_raspberry_revision():
@@ -250,10 +247,7 @@ def get_raspberry_revision():
         'a020d3': '1.3',
         '9020e0': '1.0'
     }
-    try:
-        return revisions.get(get_raspberry_code())
-    except Exception:
-        return 'Unable to determine Raspberry revision.'
+    return revisions.get(get_raspberry_code())
 
 
 def get_raspberry_ram():
@@ -281,10 +275,7 @@ def get_raspberry_ram():
         'a020d3': '1 GB',
         '9020e0': '512 MB'
     }
-    try:
-        return rams.get(get_raspberry_code())
-    except Exception:
-        return 'Unable to determine Raspberry RAM.'
+    return rams.get(get_raspberry_code())
 
 
 def get_raspberry_manufacturer():
@@ -312,10 +303,7 @@ def get_raspberry_manufacturer():
         'a020d3': 'Sony UK',
         '9020e0': 'Sony UK'
     }
-    try:
-        return manufacturers.get(get_raspberry_code())
-    except Exception:
-        return 'Unable to determine Raspberry manufacturer.'
+    return manufacturers.get(get_raspberry_code())
 
 
 def compile_report():

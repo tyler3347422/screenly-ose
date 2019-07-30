@@ -2,23 +2,22 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Screenly, Inc"
-__copyright__ = "Copyright 2012-2019, Screenly, Inc"
+__copyright__ = "Copyright 2012-2017, Screenly, Inc"
 __license__ = "Dual License: GPLv2 and Commercial License"
 
-import json
-import pydbus
-import re
-import traceback
-import uuid
-from base64 import b64encode
 from datetime import timedelta
 from dateutil import parser as date_parser
 from functools import wraps
 from hurry.filesize import size
+import json
 from mimetypes import guess_type
 from os import getenv, makedirs, mkdir, path, remove, rename, statvfs, stat
+from sh import git
 from subprocess import check_output
-from urlparse import urlparse
+import traceback
+import uuid
+import hashlib
+from base64 import b64encode
 
 from flask import Flask, make_response, render_template, request, send_from_directory, url_for
 from flask_cors import CORS
@@ -34,18 +33,18 @@ from lib import db
 from lib import diagnostics
 from lib import queries
 
-from lib.utils import get_active_connections, remove_connection
+from lib.utils import nmcli_get_connections, nmcli_remove_connection
 from lib.utils import get_node_ip, get_node_mac_address
 from lib.utils import get_video_duration
 from lib.utils import download_video_from_youtube, json_dump
 from lib.utils import url_fails
 from lib.utils import validate_url
-from lib.utils import is_balena_app, is_demo_node, is_wott_integrated, get_wott_device_id
+from lib.utils import is_demo_node
 
-from settings import CONFIGURABLE_SETTINGS, DEFAULTS, LISTEN, PORT, settings, ZmqPublisher, ZmqCollector
-from auth import authorized
+from settings import auth_basic, CONFIGURABLE_SETTINGS, DEFAULTS, LISTEN, PORT, settings, ZmqPublisher, ZmqCollector
 
 HOME = getenv('HOME', '/home/pi')
+DISABLE_MANAGE_NETWORK = '.screenly/disable_manage_network'
 
 app = Flask(__name__)
 CORS(app)
@@ -87,7 +86,8 @@ def is_up_to_date():
         latest_sha = None
 
     if latest_sha:
-        return diagnostics.get_git_hash() == latest_sha
+        branch_sha = git('rev-parse', 'HEAD')
+        return branch_sha.stdout.strip() == latest_sha
 
     # If we weren't able to verify with remote side,
     # we'll set up_to_date to true in order to hide
@@ -102,15 +102,14 @@ def template(template_name, **context):
     but also injects some global context."""
 
     # Add global contexts
-    context['date_format'] = settings['date_format']
+    context['up_to_date'] = is_up_to_date()
     context['default_duration'] = settings['default_duration']
     context['default_streaming_duration'] = settings['default_streaming_duration']
+    context['use_24_hour_clock'] = settings['use_24_hour_clock']
     context['template_settings'] = {
         'imports': ['from lib.utils import template_handle_unicode'],
         'default_filters': ['template_handle_unicode'],
     }
-    context['up_to_date'] = is_up_to_date()
-    context['use_24_hour_clock'] = settings['use_24_hour_clock']
 
     return render_template(template_name, context=context)
 
@@ -210,42 +209,6 @@ class AssetContentModel(Schema):
         },
     }
     required = ['type', 'filename']
-
-
-class AssetPropertiesModel(Schema):
-    type = 'object'
-    properties = {
-        'name': {'type': 'string'},
-        'start_date': {
-            'type': 'string',
-            'format': 'date-time'
-        },
-        'end_date': {
-            'type': 'string',
-            'format': 'date-time'
-        },
-        'duration': {'type': 'string'},
-        'is_active': {
-            'type': 'integer',
-            'format': 'int64',
-        },
-        'is_enabled': {
-            'type': 'integer',
-            'format': 'int64',
-        },
-        'nocache': {
-            'type': 'integer',
-            'format': 'int64',
-        },
-        'play_order': {
-            'type': 'integer',
-            'format': 'int64',
-        },
-        'skip_asset_check': {
-            'type': 'integer',
-            'format': 'int64',
-        }
-    }
 
 
 ################################
@@ -428,26 +391,6 @@ def prepare_asset_v1_2(request_environ, asset_id=None, unique_name=False):
     return asset
 
 
-def update_asset(asset, data):
-    for key, value in data.items():
-
-        if key in ['asset_id', 'is_processing', 'mimetype', 'uri'] or key not in asset:
-            continue
-
-        if key in ['start_date', 'end_date']:
-            value = date_parser.parse(value).replace(tzinfo=None)
-
-        if key in ['play_order', 'skip_asset_check', 'is_enabled', 'is_active', 'nocache']:
-            value = int(value)
-
-        if key == 'duration':
-            if "video" not in asset['mimetype']:
-                continue
-            value = int(value)
-
-        asset.update({key: value})
-
-
 # api view decorator. handles errors
 def api_response(view):
     @wraps(view)
@@ -462,7 +405,7 @@ def api_response(view):
 
 
 class Assets(Resource):
-    method_decorators = [authorized]
+    method_decorators = [auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -525,7 +468,7 @@ class Assets(Resource):
 
 
 class Asset(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -619,7 +562,7 @@ class Asset(Resource):
 
 
 class AssetsV1_1(Resource):
-    method_decorators = [authorized]
+    method_decorators = [auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -665,7 +608,7 @@ class AssetsV1_1(Resource):
 
 
 class AssetV1_1(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -745,7 +688,7 @@ class AssetV1_1(Resource):
 
 
 class AssetsV1_2(Resource):
-    method_decorators = [authorized]
+    method_decorators = [auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -798,7 +741,7 @@ class AssetsV1_2(Resource):
 
 
 class AssetV1_2(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -818,54 +761,6 @@ class AssetV1_2(Resource):
     })
     def get(self, asset_id):
         with db.conn(settings['database']) as conn:
-            return assets_helper.read(conn, asset_id)
-
-    @swagger.doc({
-        'parameters': [
-            {
-                'name': 'asset_id',
-                'type': 'string',
-                'in': 'path',
-                'description': 'ID of an asset',
-                'required': True
-            },
-            {
-                'in': 'body',
-                'name': 'properties',
-                'description': 'Properties of an asset',
-                'schema': AssetPropertiesModel,
-                'required': True
-            }
-        ],
-        'responses': {
-            '200': {
-                'description': 'Asset updated',
-                'schema': AssetModel
-            }
-        }
-    })
-    def patch(self, asset_id):
-        data = json.loads(request.data)
-        with db.conn(settings['database']) as conn:
-
-            asset = assets_helper.read(conn, asset_id)
-            if not asset:
-                raise Exception('Asset not found.')
-            update_asset(asset, data)
-
-            assets = assets_helper.read(conn)
-            ids_of_active_assets = [x['asset_id'] for x in assets if x['is_active']]
-
-            asset = assets_helper.update(conn, asset_id, asset)
-
-            try:
-                ids_of_active_assets.remove(asset['asset_id'])
-            except ValueError:
-                pass
-            if asset['is_active']:
-                ids_of_active_assets.insert(asset['play_order'], asset['asset_id'])
-
-            assets_helper.save_ordering(conn, ids_of_active_assets)
             return assets_helper.read(conn, asset_id)
 
     @swagger.doc({
@@ -940,7 +835,7 @@ class AssetV1_2(Resource):
 
 
 class FileAsset(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -987,7 +882,7 @@ class FileAsset(Resource):
 
 
 class PlaylistOrder(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -1015,7 +910,7 @@ class PlaylistOrder(Resource):
 
 
 class Backup(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -1028,12 +923,12 @@ class Backup(Resource):
         }
     })
     def post(self):
-        filename = backup_helper.create_backup(name=settings['player_name'])
+        filename = backup_helper.create_backup()
         return filename, 201
 
 
 class Recover(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -1064,7 +959,7 @@ class Recover(Resource):
 
 
 class ResetWifiConfig(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -1080,37 +975,27 @@ class ResetWifiConfig(Resource):
         if path.isfile(file_path):
             remove(file_path)
 
-        bus = pydbus.SystemBus()
+        device_uuid = None
 
-        pattern_include = re.compile("wlan*")
-        pattern_exclude = re.compile("ScreenlyOSE-*")
+        wireless_connections = nmcli_get_connections(
+            'wlan*',
+            'ScreenlyOSE-*',
+            fields=['name', 'device', 'uuid'],
+            active=True
+        )
+        if wireless_connections:
+            _, _, device_uuid = wireless_connections[0].split(':')
 
-        wireless_connections = get_active_connections(bus)
+        if not device_uuid:
+            raise Exception('The device has no active connection.')
 
-        if wireless_connections is not None:
-            device_uuid = None
-
-            wireless_connections = filter(
-                lambda c: not pattern_exclude.search(str(c['Id'])),
-                filter(
-                    lambda c: pattern_include.search(str(c['Devices'])),
-                    wireless_connections
-                )
-            )
-
-            if len(wireless_connections) > 0:
-                device_uuid = wireless_connections[0].get('Uuid')
-
-            if not device_uuid:
-                raise Exception('The device has no active connection.')
-
-            remove_connection(bus, device_uuid)
+        nmcli_remove_connection(device_uuid)
 
         return '', 204
 
 
 class Info(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     def get(self):
         viewlog = None
@@ -1134,7 +1019,7 @@ class Info(Resource):
 
 
 class AssetsControl(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -1164,7 +1049,7 @@ class AssetsControl(Resource):
 
 
 class AssetContent(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'parameters': [
@@ -1223,7 +1108,7 @@ class AssetContent(Resource):
 
 
 class ViewerCurrentAsset(Resource):
-    method_decorators = [api_response, authorized]
+    method_decorators = [api_response, auth_basic]
 
     @swagger.doc({
         'responses': {
@@ -1296,10 +1181,10 @@ else:
 
 
 @app.route('/')
-@authorized
+@auth_basic
 def viewIndex():
     player_name = settings['player_name']
-    my_ip = urlparse(request.host_url).hostname
+    my_ip = get_node_ip()
     is_demo = is_demo_node()
     resin_uuid = getenv("RESIN_UUID", None)
 
@@ -1317,33 +1202,68 @@ def viewIndex():
 
 
 @app.route('/settings', methods=["GET", "POST"])
-@authorized
+@auth_basic
 def settings_page():
     context = {'flash': None}
 
     if request.method == "POST":
         try:
             # put some request variables in local variables to make easier to read
-            current_pass = request.form.get('current-password', '')
-            auth_backend = request.form.get('auth_backend', '')
+            current_pass = request.form.get('curpassword', '')
+            new_pass = request.form.get('password', '')
+            new_pass2 = request.form.get('password2', '')
+            current_pass = '' if current_pass == '' else hashlib.sha256(current_pass).hexdigest()
+            new_pass = '' if new_pass == '' else hashlib.sha256(new_pass).hexdigest()
+            new_pass2 = '' if new_pass2 == '' else hashlib.sha256(new_pass2).hexdigest()
 
-            if auth_backend != settings['auth_backend'] and settings['auth_backend']:
-                if not current_pass:
-                    raise ValueError("Must supply current password to change authentication method")
-                if not settings.auth.check_password(current_pass):
-                    raise ValueError("Incorrect current password.")
+            new_user = request.form.get('user', '')
+            use_auth = request.form.get('use_auth', '') == 'on'
 
-            prev_auth_backend = settings['auth_backend']
-            if not current_pass and prev_auth_backend:
-                current_pass_correct = None
-            else:
-                current_pass_correct = settings.auth_backends[prev_auth_backend].check_password(current_pass)
-            next_auth_backend = settings.auth_backends[auth_backend]
-            next_auth_backend.update_settings(current_pass_correct)
-            settings['auth_backend'] = auth_backend
+            # Handle auth components
+            if settings['password'] != '':  # if password currently set,
+                if new_user != settings['user']:  # trying to change user
+                    # should have current password set. Optionally may change password.
+                    if current_pass == '':
+                        if not use_auth:
+                            raise ValueError("Must supply current password to disable authentication")
+                        raise ValueError("Must supply current password to change username")
+                    if current_pass != settings['password']:
+                        raise ValueError("Incorrect current password.")
+
+                    settings['user'] = new_user
+
+                if new_pass != '' and use_auth:
+                    if current_pass == '':
+                        raise ValueError("Must supply current password to change password")
+                    if current_pass != settings['password']:
+                        raise ValueError("Incorrect current password.")
+
+                    if new_pass2 != new_pass:  # changing password
+                        raise ValueError("New passwords do not match!")
+
+                    settings['password'] = new_pass
+
+                if new_pass == '' and not use_auth and new_pass2 == '':
+                    # trying to disable authentication
+                    if current_pass == '':
+                        raise ValueError("Must supply current password to disable authentication")
+                    settings['password'] = ''
+
+            else:  # no current password
+                if new_user != '':  # setting username and password
+                    if new_pass != '' and new_pass != new_pass2:
+                        raise ValueError("New passwords do not match!")
+                    if new_pass == '':
+                        raise ValueError("Must provide password")
+                    settings['user'] = new_user
+                    settings['password'] = new_pass
 
             for field, default in CONFIGURABLE_SETTINGS.items():
                 value = request.form.get(field, default)
+
+                # skip user and password as they should be handled already.
+                if field == "user" or field == "password":
+                    continue
 
                 if not value and field in ['default_duration', 'default_streaming_duration']:
                     value = str(0)
@@ -1367,33 +1287,21 @@ def settings_page():
     for field, default in DEFAULTS['viewer'].items():
         context[field] = settings[field]
 
-    auth_backends = []
-    for backend in settings.auth_backends_list:
-        if backend.template:
-            html, ctx = backend.template
-            context.update(ctx)
-        else:
-            html = None
-        auth_backends.append({
-            'name': backend.name,
-            'text': backend.display_name,
-            'template': html,
-            'selected': 'selected' if settings['auth_backend'] == backend.name else ''
-        })
+    context['user'] = settings['user']
+    context['password'] = "password" if settings['password'] != "" else ""
 
-    context.update({
-        'user': settings['user'],
-        'need_current_password': bool(settings['auth_backend']),
-        'is_balena': is_balena_app(),
-        'auth_backend': settings['auth_backend'],
-        'auth_backends': auth_backends
-    })
+    context['reset_button_state'] = "disabled" if path.isfile(path.join(HOME, DISABLE_MANAGE_NETWORK)) else ""
+
+    if not settings['user'] or not settings['password']:
+        context['use_auth'] = False
+    else:
+        context['use_auth'] = True
 
     return template('settings.html', **context)
 
 
-@app.route('/system-info')
-@authorized
+@app.route('/system_info')
+@auth_basic
 def system_info():
     viewlog = None
     try:
@@ -1428,7 +1336,7 @@ def system_info():
     screenly_version = '%s@%s' % (branch, diagnostics.get_git_short_hash())
 
     return template(
-        'system-info.html',
+        'system_info.html',
         player_name=player_name,
         viewlog=viewlog,
         loadavg=loadavg,
@@ -1442,30 +1350,7 @@ def system_info():
     )
 
 
-@app.route('/integrations')
-@authorized
-def integrations():
-
-    context = {
-        'is_balena': is_balena_app(),
-        'is_wott_installed': is_wott_integrated(),
-    }
-
-    if context['is_balena']:
-        context['balena_device_id'] = getenv('BALENA_DEVICE_UUID')
-        context['balena_app_id'] = getenv('BALENA_APP_ID')
-        context['balena_app_name'] = getenv('BALENA_APP_NAME')
-        context['balena_supervisor_version'] = getenv('BALENA_SUPERVISOR_VERSION')
-        context['balena_host_os_version'] = getenv('BALENA_HOST_OS_VERSION')
-        context['balena_device_name_at_init'] = getenv('BALENA_DEVICE_NAME_AT_INIT')
-
-    if context['is_wott_installed']:
-        context['wott_device_id'] = get_wott_device_id()
-
-    return template('integrations.html', **context)
-
-
-@app.route('/splash-page')
+@app.route('/splash_page')
 def splash_page():
     url = None
     try:
@@ -1484,7 +1369,7 @@ def splash_page():
             url = "http://{}:{}".format(my_ip, PORT)
 
     msg = url if url else error_msg
-    return template('splash-page.html', ip_lookup=ip_lookup, msg=msg)
+    return template('splash_page.html', ip_lookup=ip_lookup, msg=msg)
 
 
 @app.errorhandler(403)
@@ -1519,14 +1404,13 @@ def dated_url_for(endpoint, **values):
 
 
 @app.route('/static_with_mime/<string:path>')
-@authorized
+@auth_basic
 def static_with_mime(path):
     mimetype = request.args['mime'] if 'mime' in request.args else 'auto'
     return send_from_directory(directory='static', filename=path, mimetype=mimetype)
 
 
-@app.before_first_request
-def main():
+if __name__ == "__main__":
     # Make sure the asset folder exist. If not, create it
     if not path.isdir(settings['assetdir']):
         mkdir(settings['assetdir'])
@@ -1540,8 +1424,6 @@ def main():
             if cursor.fetchone() is None:
                 cursor.execute(assets_helper.create_assets_table)
 
-
-if __name__ == "__main__":
     config = {
         'bind': '{}:{}'.format(LISTEN, PORT),
         'threads': 2,
