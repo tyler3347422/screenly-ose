@@ -2,7 +2,7 @@
 
 # Make sure the command is launched interactive.
 if ! [ -t 0  ]; then
-  echo -e "Detected old installation command. Please use:\n$ bash <(curl -sL https://www.screenlyapp.com/install-ose.sh)"
+  echo -e "Detected old installation command. Please use:\n$ bash <(curl -sL https://github.com/tyler3347422/screenly-ose/blob/master/bin/install.sh)"
   exit 1
 fi
 
@@ -50,7 +50,7 @@ fi
 #Add reference of what linux flavor is running to OSE_version file
 cat /etc/os-release | grep "PRETTY_NAME" >> ~/OSE_version.md
 
-echo && read -p "Do you want Screenly to manage your network? This is recommended for most users. (Y/n)" -n 1 -r -s NETWORK && echo
+echo && read -p "Do you want BRS-DDS to manage your network? This is recommended for most users. (Y/n)" -n 1 -r -s NETWORK && echo
 if [ "$NETWORK" == 'n' ]; then
   export MANAGE_NETWORK=false
 else
